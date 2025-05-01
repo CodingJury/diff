@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔀</text></svg>">
+    <title>Interactive Diff Tool</title>
+    <style>
+        :root {
+            --font-family: monospace;
+            --line-height: 21px;
+            --padding: 10px;
+
+            --gutter-bg: #f5f5f5;
+            --editor-bg: #fff;
+            --gutter-border: #ccc;
+            --gutter-text: #666;
+
+
+            --debug-background-color: hsla(0, 50%, 50%, 10%);
+            --debug-background-color2: hsla(40, 50%, 50%, 30%);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 20px;
+            width: 100vw;
+            height: 85vh;
+            font-family: var(--font-family);
+        }
+
+        /* MAIN PROJECT CONTAINER, WRAPS 2 EDITOR */
+        .diff-container {
+            display: flex;
+            width: 100%;
+            height: 100%;
+            gap: 20px;
+        }
+
+        /* WRAPPER FOR EDITOR */
+        .editor-wrapper {
+            flex: 1;
+        }
+
+        /* SINGLE EDITOR */
+        .editor-container {
+            display: flex;
+            height: 100%;
+            border: 1px solid var(--gutter-border);
+            overflow: hidden;
+        }
+
+        /* NUMBER LINE */
+        .line-numbers {
+            background-color: var(--gutter-bg);
+            border-right: 1px solid var(--gutter-border);
+            padding: var(--padding) 5px;
+            text-align: right;
+            height: 100%;
+            user-select: none;
+            overflow-y: hidden;
+        }
+        
+        .line-number {
+            padding: 0 5px;
+            color: var(--gutter-text);
+            height: var(--line-height);
+            line-height: var(--line-height);
+        }
+
+        /* CODE EDITOR */
+        .code-editor {
+            flex-grow: 1;
+            position: relative;
+            overflow: hidden;
+            background-color: var(--editor-bg);
+        }
+
+        .editor-textarea {
+            position: absolute;
+            inset: 0;
+            border: none;
+            resize: none;
+            outline: none;
+            padding: var(--padding);
+            line-height: var(--line-height);
+            white-space: pre;
+            overflow-wrap: normal;
+            overflow-x: auto;
+            overflow-y: auto;
+            tab-size: 4;
+            background-color: transparent;
+        }
+
+        /* HIGHLIGHT */
+        .highlight-overlay {
+            position: absolute;
+            pointer-events: none;
+            background-color: var(--debug-background-color);
+        }
+
+        .highlight-delete {
+            background-color: rgba(255, 200, 200, 0.5);
+            border-top: 1px dashed rgba(255, 0, 0, 0.5);
+            border-bottom: 1px dashed rgba(255, 0, 0, 0.5);
+        }
+        
+        .highlight-insert {
+            background-color: rgba(150, 250, 150, 0.5);
+            border-top: 1px dashed rgba(0, 255, 0, 1);
+            border-bottom: 1px dashed rgba(0, 255, 0, 1);
+        }
+    </style>
+</head>
+<body>
+    <h1>Interactive Diff Tool</h1>
+
+    <div class="diff-container">
+        <div class="editor-wrapper">
+            <h3>Editor 1</h3>
+            <div class="editor-container" id="left-container">
+                <div class="line-numbers" id="left-numbers"></div>
+                <div class="code-editor">
+                    <textarea class="editor-textarea" id="left-editor" spellcheck="false">
+// function to add two number
+function add(a, b) {
+    return a + b;
+}
+</textarea>
+                    <div id="left-overlay"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="editor-wrapper">
+            <h3>Editor 2</h3>
+            <div class="editor-container" id="right-container">
+                <div class="line-numbers" id="right-numbers"></div>
+                <div class="code-editor">
+                    <textarea class="editor-textarea" id="right-editor" spellcheck="false">
+// function to subtract two number
+function subtract(a, b) {
+    return a - b;
+}
+</textarea>
+                    <div id="right-overlay"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load the diff-match-patch library from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/diff_match_patch/20121119/diff_match_patch.js"></script>
+
+    <script>
+
+        class DiffEditor {
+            constructor(leftTextareaId, leftNumbersId, rightTextareaId, rightNumbersId) {
+                this.leftEditor = new CodeEditor(leftTextareaId, leftNumbersId);
+                this.rightEditor = new CodeEditor(rightTextareaId, rightNumbersId);
+                this.dmp = new diff_match_patch();
+
+                this.leftContainer = document.getElementById('left-container');
+                this.rightContainer = document.getElementById('right-container');
+                this.leftOverlay = document.getElementById('left-overlay');
+                this.rightOverlay = document.getElementById('right-overlay');
+
+                this.diffData = [];
+
+                this.init();
+            }
+
+            init() {
+                // Set up event listeners for both editors
+                const updateHandler = () => {
+                    // console.clear();
+                    this.calculateDiffs();
+                    this.updateHighlights();
+                };
+
+                this.leftEditor.textarea.addEventListener('input', updateHandler);
+                this.rightEditor.textarea.addEventListener('input', updateHandler);
+                this.setupSyncScroll();
+                
+                // Initial diff highlighting
+                updateHandler();
+            }
+
+            setupSyncScroll() {
+                let isSyncing = false;
+
+                const syncScroll = (source, target) => {
+                    if (isSyncing) return;
+                    isSyncing = true;
+                    target.scrollTop = source.scrollTop;
+                    target.scrollLeft = source.scrollLeft;
+                    isSyncing = false;
+                };
+
+                this.leftEditor.textarea.addEventListener('scroll', () => {
+                    // syncScroll(this.leftEditor.textarea, this.rightEditor.textarea);
+                    this.leftOverlay.style.transform = `translate(-${this.leftEditor.textarea.scrollLeft}px, -${this.leftEditor.textarea.scrollTop}px)`;
+                });
+
+                this.rightEditor.textarea.addEventListener('scroll', () => {
+                    // syncScroll(this.rightEditor.textarea, this.leftEditor.textarea);
+                    this.rightOverlay.style.transform = `translate(-${this.rightEditor.textarea.scrollLeft}px, -${this.rightEditor.textarea.scrollTop}px)`;
+                });
+            }
+
+            calculateDiffs() {
+                const text1 = this.leftEditor.getContent();
+                const text2 = this.rightEditor.getContent();
+
+                // Compute the differences
+                const diffs = this.dmp.diff_main(text1, text2);
+                this.dmp.diff_cleanupSemantic(diffs);
+
+                // Store diff data with positions
+                this.diffData = [];
+                let leftPos = 0;
+                let rightPos = 0;
+
+                for(const [operation, text] of diffs) {
+                    this.diffData.push({
+                        operation,
+                        text,
+                        leftStart: leftPos,
+                        leftEnd: leftPos + (operation === -1 ? text.length : 0),
+                        rightStart: rightPos,
+                        rightEnd: rightPos + (operation === 1 ? text.length : 0)
+                    })
+
+                    if(operation === 0 || operation === -1) leftPos += text.length;
+                    if(operation === 0 || operation === 1) rightPos += text.length;
+                }
+
+            }
+
+            updateHighlights() {
+                for(const diff of this.diffData) {
+                    console.log(`${('['+diff.operation.toString()+']').padStart(5)}    (${(diff.leftStart.toString()).padStart(2)} ${(diff.leftEnd.toString()).padStart(2)} ${(diff.rightStart.toString()).padStart(2)} ${(diff.rightEnd.toString()).padStart(2)} ) ${(diff.text.length).toString().padStart(3)}`)
+                    if(diff.operation == -1) {
+                        const style = 'background-color: rgba(255,0,0,0.3); color: rgba(255,0,0,1);'
+                        console.log(`%c${diff.text}`, style)
+                    }else if(diff.operation == 1) {
+                        const style = 'background-color: rgba(0,255,0,0.3); color: rgba(0,255,0,1);'
+                        console.log(`%c${diff.text}`, style)
+                    }else{
+                        const style = 'background-color: rgba(0,0,255,0.3); color: rgba(0,0,255,1);'
+                        console.log(`%c${diff.text}`, style)
+                    }
+                    console.log('-----------------------------\n');
+                }
+
+                // Clear previous highlights and buttons
+                this.clearHighlights();
+
+                // Process each diff to create highlights
+                for (const diff of this.diffData) {
+                    if (diff.operation === -1) { // Deletion in left
+                        this.createHighlightForDiff(
+                            this.leftEditor.textarea,
+                            this.leftOverlay,
+                            diff.leftStart,
+                            diff.leftEnd,
+                            'highlight-delete',
+                            '→')
+                    } else if (diff.operation === 1) { // Insertion in right
+                        this.createHighlightForDiff(
+                            this.rightEditor.textarea,
+                            this.rightOverlay,
+                            diff.rightStart,
+                            diff.rightEnd,
+                            'highlight-insert',
+                            '←')
+                    }
+                }
+            }
+
+            createHighlightForDiff(textarea, overlay, start, end, className, btnSymbol) {
+                const text = textarea.value.substring(start, end);
+                const lines = text.split('\n');
+                console.log({start, end, text, lines})
+
+                // Get the text before the diff to calculate line numbers
+                const textBefore = textarea.value.substring(0, start);
+                const startLine = textBefore.split('\n').length - 1;
+                const startLinePos = textBefore.lastIndexOf('\n') + 1;
+                console.log({textBefore, startLine, startLinePos})
+
+                // Create highlights for each line of the diff
+                let currentPos = start;
+                for (let i = 0; i < lines.length; i++) {
+                    const lineText = lines[i];
+                    const lineEnd = currentPos + lineText.length + (i < lines.length - 1 ? 1 : 0); // Include newline
+                    
+                    // Calculate position within the line
+                    const lineStartPos = currentPos - textarea.value.lastIndexOf('\n', currentPos) - 1;
+                    
+                    // Create highlight for this line segment
+                    const highlight = document.createElement('div');
+                    highlight.className = `highlight-overlay ${className}`;
+                    highlight.style.top = `${(startLine + i) * 21 + 10}px`;
+                    highlight.style.left = `${lineStartPos * 8 + 10}px`;
+                    highlight.style.width = `${lineText.length * 8 }px`;
+                    highlight.style.height = `20px`;
+                    
+                    overlay.appendChild(highlight);
+                    
+                    currentPos = lineEnd;
+                }
+            }
+
+            clearHighlights() {
+                this.leftOverlay.innerHTML = '';
+                this.rightOverlay.innerHTML = '';
+            }
+        }
+
+        class CodeEditor {
+            constructor(textareaId, lineNumberId) {
+                this.textarea = document.getElementById(textareaId)
+                this.lineNumbers = document.getElementById(lineNumberId)
+                this.init();
+            }
+
+            init() {
+                this.updateLineNumbers();
+
+                this.textarea.addEventListener('input', () => this.updateLineNumbers())
+                this.textarea.addEventListener('scroll', () => this.syncScroll())
+
+                this.textarea.addEventListener('keydown', (e) => {
+                    if(e.key === 'Tab') {
+                        e.preventDefault();
+                        const start = this.textarea.selectionStart;
+                        const end = this.textarea.selectionEnd;
+                        
+                        this.textarea.value = this.textarea.value.substring(0, start) + '    ' + this.textarea.value.substring(end);
+                        this.textarea.selectionStart = this.textarea.selectionEnd = start + 4;
+                    }
+                })
+            }
+
+            updateLineNumbers() {
+                const lines = this.textarea.value.split('\n')
+                let numbersHTML = '';
+                for(let i = 1; i <= lines.length; i++) {
+                    numbersHTML += `<div class="line-number">${i}</div>`
+                }
+                if (lines.length === 0) {
+                    numbersHTML = '<div class="line-number">1</div>';
+                }
+                this.lineNumbers.innerHTML = numbersHTML;
+            }
+
+            syncScroll() {
+                // console.log(this.lineNumbers)
+                this.lineNumbers.scrollTop = this.textarea.scrollTop
+            }
+
+            getContent() {
+                return this.textarea.value
+            }
+
+            setContent(content) {
+                this.textarea.value = content;
+                this.updateLineNumbers();
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            new DiffEditor(
+                'left-editor', 'left-numbers',
+                'right-editor', 'right-numbers'
+            );
+        });
+    </script>
+</body>
+</html>
